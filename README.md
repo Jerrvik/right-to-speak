@@ -8,7 +8,7 @@
 
 ## Установка
 
-1. Остановите Foundry и создайте резервную копию User Data тестового мира.
+1. Создайте резервную копию User Data тестового мира при остановленной Foundry, затем снова запустите Foundry.
 2. В Foundry 14.364 откройте **Setup → Add-on Modules → Install Module** и вставьте в поле **Manifest URL** адрес `https://raw.githubusercontent.com/Jerrvik/right-to-speak/main/src/right-to-speak/module.json`.
 3. Установите модуль и включите **Right to Speak — BETA** в тестовом мире.
 4. Убедитесь, что обычные игроки имеют штатное разрешение **Query Users** (`QUERY_USER`). Модуль сообщит об ошибке доставки, если оно выключено.
