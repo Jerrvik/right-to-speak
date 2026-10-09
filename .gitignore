@@ -1,0 +1,21 @@
+# Build output is published as a GitHub Release asset.
+dist/
+node_modules/
+
+# Local settings, credentials, logs, and temporary files.
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+*.log
+*.tmp
+*.bak
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local development instructions are not part of the published module.
+AGENTS.md
+CODEX_START_RU.md
+CODEX_TASK.md

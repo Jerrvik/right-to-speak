@@ -1,0 +1,9 @@
+{
+  "name": "right-to-speak-development",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/unit/*.test.js",
+    "build": "node tools/build.mjs"
+  }
+}
