@@ -1,4 +1,5 @@
 import {RTSTransport} from "./core/transport.js";
+import {PersonalTransport} from "./core/personal.js";
 import {isGM} from "./core/privacy.js";
 import {MODULE_ID} from "./core/request-model.js";
 import {loadPreferences, registerSettings, savePreferences} from "./core/settings.js";
@@ -8,34 +9,40 @@ import {PlayerPanel} from "./ui/player-panel.js";
 let playerPanel;
 let gmPanel;
 let transport;
+let personal;
 
 Hooks.once("init", () => {
   registerSettings();
   transport = new RTSTransport(event => {
     playerPanel?.render();
     gmPanel?.render();
-    if (event?.urgent) gmPanel?.pulse();
+    if (event?.arrival) gmPanel?.notifyArrival(event.arrival);
+  });
+  personal = new PersonalTransport(event => {
+    playerPanel?.render();
+    if (event?.personalIncoming) playerPanel?.notifyPersonal(event.personalIncoming);
   });
   RTSTransport.registerQueries(transport);
+  PersonalTransport.registerQueries(personal);
 });
 
 Hooks.once("ready", async () => {
   const preferences = loadPreferences(game.world.id, game.user.id);
   const save = () => savePreferences(game.world.id, game.user.id, preferences);
   await transport.start();
+  if (!isGM(game.user)) await personal.start();
   if (isGM(game.user)) gmPanel = new GMPanel(transport, preferences, save);
-  else playerPanel = new PlayerPanel(transport, preferences, save);
+  else playerPanel = new PlayerPanel(transport, personal, preferences, save);
   Hooks.on("updateSetting", setting => {
     if (setting.key === `${MODULE_ID}.publicQueue`) {
       transport.mergePublicFromSetting();
-      playerPanel?.notifyPublicUrgent();
     }
     playerPanel?.render();
     gmPanel?.render();
   });
-  Hooks.on("userConnected", () => { void transport.onUsersChanged(); });
-  Hooks.on("updateUser", () => { void transport.onUsersChanged(); });
-  window.addEventListener("online", () => { void transport.synchronize(); });
-  game.socket.on("connect", () => { void transport.synchronize(); });
+  Hooks.on("userConnected", () => { void transport.onUsersChanged(); void personal.synchronize(); });
+  Hooks.on("updateUser", () => { void transport.onUsersChanged(); void personal.synchronize(); });
+  window.addEventListener("online", () => { void transport.synchronize(); void personal.synchronize(); });
+  game.socket.on("connect", () => { void transport.synchronize(); void personal.synchronize(); });
   void transport.onUsersChanged();
 });

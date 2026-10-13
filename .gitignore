@@ -1,21 +1,32 @@
-# Build output is published as a GitHub Release asset.
+# Release assets and local Foundry data
 dist/
 node_modules/
-
-# Local settings, credentials, logs, and temporary files.
-.env
-.env.*
-!.env.example
-.vscode/
-.idea/
+*.zip
 *.log
 *.tmp
 *.bak
 *.swp
-.DS_Store
-Thumbs.db
 
-# Local development instructions are not part of the published module.
+# Development material kept outside the public plugin tree
+.github/
+.gitattributes
+design/
+docs/
+localization/
+tests/
+tools/
+right-to-speak-html-for-codex/
 AGENTS.md
 CODEX_START_RU.md
 CODEX_TASK.md
+RELEASE_NOTES.md
+package.json
+src/README.md
+
+# Local configuration
+.env
+.env.*
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

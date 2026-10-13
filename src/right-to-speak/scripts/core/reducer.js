@@ -13,7 +13,6 @@ export function reduceRequest(current, command, context) {
   const next = {...current, revision: current.revision + 1, updatedAt: now};
   switch (command.type) {
     case "UPDATE_REQUEST": {
-      assert(current.status !== "floor", "invalidTransition");
       const category = command.category;
       assert(CATEGORIES.has(category) && (current.urgency === "urgent" ? category !== "word" : category === "word"), "invalidCategory");
       next.category = category;
@@ -25,6 +24,14 @@ export function reduceRequest(current, command, context) {
       assert(current.urgency === "normal", "invalidTransition");
       next.urgency = "urgent";
       next.category = "intervention";
+      break;
+    case "ESCALATE_WITH_DETAILS":
+      assert(current.urgency === "normal", "invalidTransition");
+      assert(CATEGORIES.has(command.category) && !["word", "intervention"].includes(command.category), "invalidCategory");
+      next.urgency = "urgent";
+      next.category = command.category;
+      next.targetUserId = validateTarget(command.targetUserId ?? null, current.ownerUserId, userIds);
+      next.note = validateNote(command.note ?? "");
       break;
     case "SET_VISIBILITY":
       assert(["public", "gm"].includes(command.visibility) && command.visibility !== current.visibility, "invalidVisibility");

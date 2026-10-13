@@ -224,7 +224,7 @@ export class RTSTransport {
     } else {
       const existing = before.find(r => r.id === command.id);
       assert(existing, "notFound");
-      if (command.type === "ESCALATE") {
+      if (command.type === "ESCALATE" || command.type === "ESCALATE_WITH_DETAILS") {
         const cooldown = Math.max(0, Number(game.settings.get(MODULE_ID, "escalateCooldown")) || 0) * 1000;
         const priorUrgent = before.filter(r => r.ownerUserId === actor.id && r.id !== existing.id && r.urgency === "urgent")
           .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
@@ -241,17 +241,21 @@ export class RTSTransport {
     const publicChanged = publicBefore !== publicAfter;
     try { await this.storage.saveLocal(this.worldId, this.userId, next, [...usedNext.values()]); }
     catch { this.privateReady = false; throw new RequestError("storageUnavailable"); }
+    // Keep the full GM record visible while the public setting update notifies clients.
+    // The setting contains a redacted projection and must never replace its note.
+    this.requests = new Map(next.map(r => [r.id, r]));
+    this.usedIds = usedNext;
     if (publicChanged) {
       try { await game.settings.set(MODULE_ID, "publicQueue", sanitizedPublicSetting(next)); }
       catch (error) {
         try { await this.storage.saveLocal(this.worldId, this.userId, before, usedBefore); }
         catch { this.privateReady = false; }
+        this.requests = new Map(before.map(r => [r.id, r]));
+        this.usedIds = new Map(usedBefore.map(r => [r.id, r]));
         throw error;
       }
     }
-    this.requests = new Map(next.map(r => [r.id, r]));
-    this.usedIds = usedNext;
-    this.onChange({urgent: changed.some(r => r.urgency === "urgent" && r.revision === 1)});
+    this.onChange({arrival: changed.length === 1 && changed[0].revision === 1 ? changed[0] : null});
     void Promise.allSettled(changed.flatMap(r => [this.deliverToOwner(r), this.replicateToGMs(r)]));
     return {request: changed.length === 1 ? changed[0] : null, count: changed.length};
   }
@@ -305,7 +309,7 @@ export class RTSTransport {
       await this.storage.saveLocal(this.worldId, this.userId, next, [...usedNext.values()]);
       this.requests = new Map(next.map(r => [r.id, r]));
       this.usedIds = usedNext;
-      this.onChange({urgent: request.urgency === "urgent" && request.revision === 1});
+      this.onChange({arrival: request.revision === 1 ? request : null});
     }
     return {ok: true};
   }

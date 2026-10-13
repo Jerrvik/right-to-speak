@@ -1,4 +1,7 @@
-import {applyPanelPosition, button, categoryName, confirmAction, errorText, makeDraggable, node, statusWithIcon, t, userName} from "./dom.js";
+import {applyPanelPosition, button, categoryName, confirmAction, errorText, iconButton, makeDraggable, node, preferenceControls, statusName, t, userName} from "./dom.js";
+import {icon} from "./icons.js";
+import {playSound} from "./sound.js";
+import {displayContent} from "./display.js";
 
 export class GMPanel {
   constructor(transport, preferences, savePreferences) {
@@ -6,8 +9,8 @@ export class GMPanel {
     this.preferences = preferences;
     this.savePreferences = savePreferences;
     this.filter = "all";
-    this.expanded = new Set();
-    this.settingsOpen = false;
+    this.newIds = new Set();
+    this.menuOpen = false;
     this.message = "";
     this.busy = false;
     this.element = node("section", "rts-panel rts-gm");
@@ -17,31 +20,19 @@ export class GMPanel {
     window.addEventListener("resize", () => this.position());
   }
 
-  position() {
-    applyPanelPosition(this.element, this.preferences, "gmX", "gmY", () => Math.max(90, window.innerWidth - 740), () => 105);
-  }
+  position() { applyPanelPosition(this.element, this.preferences, "gmX", "gmY", () => Math.max(90, window.innerWidth - 740), () => 105); }
 
-  pulse() {
-    this.element.classList.remove("rts-pulse");
-    void this.element.offsetWidth;
-    this.element.classList.add("rts-pulse");
-    setTimeout(() => this.element.classList.remove("rts-pulse"), 1700);
-    if (this.preferences.sound && game.settings.get("right-to-speak", "allowSound")) this.beep();
-  }
-
-  beep() {
-    try {
-      const context = new AudioContext();
-      const oscillator = context.createOscillator();
-      const gain = context.createGain();
-      oscillator.type = "sine";
-      oscillator.frequency.value = 660;
-      gain.gain.value = 0.02;
-      oscillator.connect(gain).connect(context.destination);
-      oscillator.start();
-      oscillator.stop(context.currentTime + 0.12);
-      oscillator.onended = () => context.close();
-    } catch { /* Audio is optional. */ }
+  notifyArrival(request) {
+    this.newIds.add(request.id);
+    this.render();
+    if (request.urgency === "urgent") {
+      this.element.classList.remove("rts-pulse");
+      void this.element.offsetWidth;
+      this.element.classList.add("rts-pulse");
+      setTimeout(() => this.element.classList.remove("rts-pulse"), 2300);
+    }
+    setTimeout(() => { this.newIds.delete(request.id); this.render(); }, 2300);
+    void playSound(request.urgency === "urgent" ? "urgent" : "word", this.preferences);
   }
 
   async command(type, request) {
@@ -51,6 +42,7 @@ export class GMPanel {
     catch (error) {
       this.message = errorText(error);
       if ((error?.code ?? error?.message) === "conflict") await this.transport.synchronize();
+      this.menuOpen = true;
     }
     finally { this.busy = false; this.render(); }
   }
@@ -60,104 +52,98 @@ export class GMPanel {
     if (!count || !(await confirmAction("ConfirmClear", {count}))) return;
     this.busy = true; this.render();
     try { await this.transport.submit({type: "CLEAR_QUEUE"}); }
-    catch (error) { this.message = errorText(error); }
+    catch (error) { this.message = errorText(error); this.menuOpen = true; }
     finally { this.busy = false; this.render(); }
   }
 
   filtered(requests) {
-    if (this.filter === "urgent") return requests.filter(r => r.urgency === "urgent");
-    if (this.filter === "normal") return requests.filter(r => r.urgency === "normal");
-    if (this.filter === "private") return requests.filter(r => r.visibility === "gm");
+    if (this.filter === "urgent") return requests.filter(request => request.urgency === "urgent");
+    if (this.filter === "normal") return requests.filter(request => request.urgency === "normal");
+    if (this.filter === "private") return requests.filter(request => request.visibility === "gm");
     return requests;
   }
 
   requestRow(request) {
-    const card = node("article", "rts-request");
-    const summary = button("", "rts-summary", () => {
-      if (this.expanded.has(request.id)) this.expanded.delete(request.id);
-      else this.expanded.add(request.id);
-      this.render();
-    }, userName(request.ownerUserId));
-    summary.setAttribute("aria-expanded", String(this.expanded.has(request.id)));
-    summary.append(node("span", `rts-priority ${request.urgency === "urgent" ? "rts-priority-urgent" : ""}`, request.urgency === "urgent" ? "!" : "✋"));
-    summary.append(node("span", "rts-username", userName(request.ownerUserId)));
-    summary.append(node("span", "rts-category-name", categoryName(request.category)));
-    if (request.visibility === "gm") summary.append(node("span", "rts-lock", "🔒"));
-    card.append(summary);
-    if (request.targetUserId) card.append(node("div", "rts-target-line", `→ ${userName(request.targetUserId)}`));
-    card.append(node("div", "rts-status", statusWithIcon(request.status)));
-    if (this.expanded.has(request.id)) {
-      if (request.note) card.append(node("p", "rts-full-note", request.note));
-      const controls = node("div", "rts-gm-actions");
-      if (request.status === "pending") controls.append(button(t("Acknowledge"), "rts-button", () => this.command("ACKNOWLEDGE_REQUEST", request)));
-      if (["pending", "acknowledged"].includes(request.status)) controls.append(button(t("GrantFloor"), "rts-button", () => this.command("GRANT_FLOOR", request)));
-      controls.append(button(t("Close"), "rts-button rts-muted-button", () => this.command("CLOSE_REQUEST", request)));
-      for (const control of controls.children) control.disabled = this.busy;
-      card.append(controls);
-    }
+    const urgent = request.urgency === "urgent";
+    const card = node("article", `rts-request ${urgent ? "rts-request-urgent" : ""} ${this.newIds.has(request.id) ? "rts-request-new" : ""}`);
+    const head = node("div", "rts-card-head");
+    const kind = node("span", `rts-kind-icon rts-kind-${request.category}`);
+    kind.append(icon(["word", "action", "support", "counteraction", "clarification"].includes(request.category) ? request.category : "alert"));
+    head.append(kind);
+    const text = node("div", "rts-card-text");
+    const name = node("strong", "rts-username", userName(request.ownerUserId, this.preferences));
+    name.title = name.textContent;
+    text.append(name);
+    text.append(node("div", `rts-category-name rts-category-${request.category}`, request.status === "floor" ? statusName("floor") : categoryName(request.category)));
+    if (request.targetUserId) text.append(node("div", "rts-target-line", `${t("TargetShort")}: ${userName(request.targetUserId, this.preferences)}`));
+    const note = displayContent(request.note);
+    if (note) text.append(node("p", "rts-full-note", note));
+    head.append(text);
+    const flags = node("div", "rts-card-flags");
+    if (urgent) flags.append(icon("alert", "rts-flag-urgent"));
+    if (request.visibility === "gm") flags.append(icon("lock", "rts-flag-lock"));
+    const seen = iconButton(request.status === "pending" ? "eye" : "check", `rts-seen-icon ${request.status === "pending" ? "" : "rts-ack"}`, () => this.command("ACKNOWLEDGE_REQUEST", request), t("Acknowledge"));
+    seen.disabled = this.busy || request.status !== "pending";
+    flags.append(seen); head.append(flags); card.append(head);
+    const actions = node("div", "rts-gm-actions");
+    const floor = button(request.status === "floor" ? t("FloorGiven") : t("GrantFloor"), `rts-card-button ${request.status === "floor" ? "rts-floor-active" : ""}`, () => this.command("GRANT_FLOOR", request));
+    floor.disabled = this.busy || request.status === "floor";
+    const close = button(t("Close"), "rts-card-button", () => this.command("CLOSE_REQUEST", request));
+    close.disabled = this.busy;
+    actions.append(floor, close); card.append(actions);
     return card;
   }
 
-  section(body, title, requests) {
-    const section = node("div", "rts-gm-section");
-    section.append(node("h4", "", `${title} (${requests.length})`));
-    if (!requests.length) section.append(node("p", "rts-empty", t("NoRequests")));
-    for (const request of requests) section.append(this.requestRow(request));
-    body.append(section);
+  menu() {
+    const menu = node("div", "rts-drop-menu");
+    menu.append(node("div", "rts-menu-title", t("MenuTitle")));
+    const filterLabel = node("label", "rts-menu-filter", t("Filter"));
+    const filter = node("select", "rts-filter");
+    filter.setAttribute("aria-label", t("Filter"));
+    for (const key of ["all", "urgent", "normal", "private"]) {
+      const option = node("option", "", t(`FilterValue.${key}`)); option.value = key; filter.append(option);
+    }
+    filter.value = this.filter;
+    filter.addEventListener("change", () => { this.filter = filter.value; this.render(); });
+    filterLabel.append(filter); menu.append(filterLabel);
+    menu.append(preferenceControls(this.preferences, this.savePreferences, () => this.render()));
+    const clear = button(t("ClearQueue"), "rts-menu-button", () => this.clear());
+    clear.disabled = this.busy || !this.transport.gmQueue().length;
+    clear.prepend(icon("reset")); menu.append(clear);
+    const clearLocal = button(t("ClearLocalPrivate"), "rts-menu-button", async () => {
+      if (await confirmAction("ConfirmClearLocal")) {
+        try { await this.transport.clearPrivateLocal(); }
+        catch (error) { this.message = errorText(error); this.render(); }
+      }
+    });
+    clearLocal.prepend(icon("lock")); menu.append(clearLocal);
+    if (this.message) menu.append(node("p", "rts-menu-message", this.message));
+    if (this.transport.replicationFailures) menu.append(node("p", "rts-menu-message", t("ReplicaWarning", {count: this.transport.replicationFailures})));
+    menu.append(node("p", "rts-menu-note", t("BetaNotice")));
+    return menu;
   }
 
   render() {
     const collapsed = this.preferences.gmCollapsed;
-    const requests = this.filtered(this.transport.gmQueue());
+    const all = this.transport.gmQueue();
+    const requests = this.filtered(all);
     this.element.classList.toggle("rts-collapsed", collapsed);
     this.element.classList.toggle("rts-reduced", this.preferences.reduceMotion);
     this.element.replaceChildren();
     const header = node("div", "rts-header");
-    header.append(node("span", "rts-drag", "⠿"), node("strong", "rts-heading", t("GMTitle")));
-    header.append(node("span", collapsed ? "rts-collapsed-count" : "rts-count", String(this.transport.gmQueue().length)));
-    header.append(button(collapsed ? "+" : "−", "rts-collapse", () => {
+    header.append(icon("users", "rts-header-symbol"), node("strong", "rts-heading", t("GMTitle")), node("span", "rts-count", String(all.length)), node("span", "rts-spacer"));
+    if (!collapsed) header.append(iconButton("more", "rts-icon-button rts-menu-toggle", () => { this.menuOpen = !this.menuOpen; this.render(); }, t("Menu")));
+    header.append(iconButton(collapsed ? "plus" : "minus", "rts-icon-button rts-collapse", () => {
       this.preferences.gmCollapsed = !collapsed; this.savePreferences(); this.render();
     }, collapsed ? t("Expand") : t("Collapse")));
     this.element.append(header);
     makeDraggable(this.element, header, this.preferences, this.savePreferences, "gmX", "gmY");
     if (!collapsed) {
+      if (this.menuOpen) this.element.append(this.menu());
       const body = node("div", "rts-body");
-      const toolbar = node("div", "rts-gm-toolbar");
-      const filter = node("select", "rts-filter");
-      filter.setAttribute("aria-label", t("Filter"));
-      for (const key of ["all", "urgent", "normal", "private"]) {
-        const option = node("option", "", t(`FilterValue.${key}`)); option.value = key; filter.append(option);
-      }
-      filter.value = this.filter;
-      filter.addEventListener("change", () => { this.filter = filter.value; this.render(); });
-      const clear = button(t("ClearQueue"), "rts-button rts-muted-button", () => this.clear());
-      clear.disabled = this.busy || !this.transport.gmQueue().length;
-      toolbar.append(filter, clear);
-      body.append(toolbar);
-      this.section(body, t("UrgentSection"), requests.filter(r => r.urgency === "urgent"));
-      this.section(body, t("NormalSection"), requests.filter(r => r.urgency === "normal"));
-      if (this.message) body.append(node("p", "rts-message", this.message));
-      if (this.transport.replicationFailures) body.append(node("p", "rts-message", t("ReplicaWarning", {count: this.transport.replicationFailures})));
-      body.append(node("p", "rts-beta-note", t("BetaNotice")));
-      body.append(button(t("Preferences"), "rts-link-button", () => { this.settingsOpen = !this.settingsOpen; this.render(); }));
-      if (this.settingsOpen) {
-        const sound = node("label", "rts-option");
-        const soundBox = node("input"); soundBox.type = "checkbox"; soundBox.checked = this.preferences.sound;
-        soundBox.addEventListener("change", () => { this.preferences.sound = soundBox.checked; this.savePreferences(); });
-        sound.append(soundBox, node("span", "", t("Sound")));
-        const motion = node("label", "rts-option");
-        const motionBox = node("input"); motionBox.type = "checkbox"; motionBox.checked = this.preferences.reduceMotion;
-        motionBox.addEventListener("change", () => { this.preferences.reduceMotion = motionBox.checked; this.savePreferences(); this.render(); });
-        motion.append(motionBox, node("span", "", t("ReduceMotion")));
-        body.append(sound, motion);
-      }
-      const clearLocal = button(t("ClearLocalPrivate"), "rts-link-button", async () => {
-        if (await confirmAction("ConfirmClearLocal")) {
-          try { await this.transport.clearPrivateLocal(); }
-          catch (error) { this.message = errorText(error); this.render(); }
-        }
-      });
-      body.append(clearLocal);
+      if (requests.length) {
+        for (const request of requests) body.append(this.requestRow(request));
+      } else body.append(node("div", "rts-empty", t("NoRequests")));
       this.element.append(body);
     }
     this.position();

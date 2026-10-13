@@ -7,7 +7,7 @@ export function registerSettings() {
     ["historyLimit", {name: "RTS.Settings.HistoryLimit", scope: "world", config: true, type: Number, default: 20, range: {min: 0, max: 100, step: 1}}],
     ["createCooldown", {name: "RTS.Settings.CreateCooldown", scope: "world", config: true, type: Number, default: 3, range: {min: 0, max: 30, step: 1}}],
     ["escalateCooldown", {name: "RTS.Settings.EscalateCooldown", scope: "world", config: true, type: Number, default: 10, range: {min: 0, max: 60, step: 1}}],
-    ["allowSound", {name: "RTS.Settings.AllowSound", scope: "world", config: true, type: Boolean, default: false}]
+    ["allowSound", {name: "RTS.Settings.AllowSound", scope: "world", config: true, type: Boolean, default: true}]
   ];
   for (const [key, data] of settings) game.settings.register(MODULE_ID, key, data);
 }
@@ -22,13 +22,21 @@ export function loadPreferences(worldId, userId) {
       y: Number.isFinite(raw.y) ? raw.y : null,
       collapsed: !!raw.collapsed,
       private: !!raw.private,
-      sound: !!raw.sound,
+      nameDisplay: raw.nameDisplay === "character" ? "character" : "player",
+      sound: raw.sound !== false,
+      volume: Number.isFinite(raw.volume) ? Math.max(0, Math.min(1, raw.volume)) : 0.45,
+      soundTypes: {
+        word: raw.soundTypes?.word !== false,
+        urgent: raw.soundTypes?.urgent !== false,
+        personal: raw.soundTypes?.personal !== false,
+        floor: raw.soundTypes?.floor !== false
+      },
       reduceMotion: !!raw.reduceMotion,
       gmX: Number.isFinite(raw.gmX) ? raw.gmX : null,
       gmY: Number.isFinite(raw.gmY) ? raw.gmY : null,
       gmCollapsed: !!raw.gmCollapsed
     };
-  } catch { return {x: null, y: null, collapsed: false, private: false, sound: false, reduceMotion: false, gmX: null, gmY: null, gmCollapsed: false}; }
+  } catch { return {x: null, y: null, collapsed: false, private: false, nameDisplay: "player", sound: true, volume: 0.45, soundTypes: {word: true, urgent: true, personal: true, floor: true}, reduceMotion: false, gmX: null, gmY: null, gmCollapsed: false}; }
 }
 
 export function savePreferences(worldId, userId, preferences) {

@@ -35,7 +35,7 @@ export function authorizedSnapshot(requests, user) {
 
 export function canAct(actor, request, action) {
   if (["ACKNOWLEDGE_REQUEST", "GRANT_FLOOR", "CLOSE_REQUEST", "CLEAR_QUEUE"].includes(action)) return isGM(actor);
-  if (action === "CANCEL_REQUEST" || action === "UPDATE_REQUEST" || action === "ESCALATE" || action === "SET_VISIBILITY") {
+  if (action === "CANCEL_REQUEST" || action === "UPDATE_REQUEST" || action === "ESCALATE" || action === "ESCALATE_WITH_DETAILS" || action === "SET_VISIBILITY") {
     return isGM(actor) || actor?.id === request?.ownerUserId;
   }
   return false;

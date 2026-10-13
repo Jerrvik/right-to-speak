@@ -30,21 +30,46 @@ async function transaction(mode, key, value) {
   } finally { db.close(); }
 }
 
+async function updateLocal(worldId, userId, changes) {
+  const key = storageKey(worldId, userId);
+  const db = await openDatabase();
+  try {
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      const store = tx.objectStore(STORE);
+      const request = store.get(key);
+      request.onsuccess = () => {
+        const old = request.result;
+        const current = old?.worldId === worldId && old?.userId === userId && Date.now() - old.savedAt <= MAX_AGE_MS ? old : {};
+        store.put({...current, ...changes, worldId, userId, savedAt: Date.now()}, key);
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  } finally { db.close(); }
+}
+
 export function storageKey(worldId, userId) {
   return `${worldId}:${userId}`;
 }
 
 export async function loadLocal(worldId, userId) {
   const value = await transaction("readonly", storageKey(worldId, userId));
-  if (!value || value.worldId !== worldId || value.userId !== userId || Date.now() - value.savedAt > MAX_AGE_MS) return {requests: [], usedIds: []};
+  if (!value || value.worldId !== worldId || value.userId !== userId || Date.now() - value.savedAt > MAX_AGE_MS) return {requests: [], usedIds: [], messages: []};
   return {
     requests: Array.isArray(value.requests) ? value.requests : [],
-    usedIds: Array.isArray(value.usedIds) ? value.usedIds : []
+    usedIds: Array.isArray(value.usedIds) ? value.usedIds : [],
+    messages: Array.isArray(value.messages) ? value.messages : []
   };
 }
 
 export async function saveLocal(worldId, userId, requests, usedIds = []) {
-  await transaction("readwrite", storageKey(worldId, userId), {worldId, userId, savedAt: Date.now(), requests, usedIds});
+  await updateLocal(worldId, userId, {requests, usedIds});
+}
+
+export async function saveMessages(worldId, userId, messages) {
+  await updateLocal(worldId, userId, {messages});
 }
 
 export async function clearLocal(worldId, userId) {
