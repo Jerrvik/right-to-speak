@@ -4,8 +4,9 @@ import {playSound} from "./sound.js";
 import {displayContent} from "./display.js";
 
 export class GMPanel {
-  constructor(transport, preferences, savePreferences) {
+  constructor(transport, personal, preferences, savePreferences) {
     this.transport = transport;
+    this.personal = personal;
     this.preferences = preferences;
     this.savePreferences = savePreferences;
     this.filter = "all";
@@ -13,6 +14,9 @@ export class GMPanel {
     this.menuOpen = false;
     this.message = "";
     this.busy = false;
+    this.replyOpen = null;
+    this.replyDrafts = new Map();
+    this.soundHint = "";
     this.element = node("section", "rts-panel rts-gm");
     this.element.setAttribute("aria-label", t("GMTitle"));
     document.body.append(this.element);
@@ -32,8 +36,47 @@ export class GMPanel {
       setTimeout(() => this.element.classList.remove("rts-pulse"), 2300);
     }
     setTimeout(() => { this.newIds.delete(request.id); this.render(); }, 2300);
-    void playSound(request.urgency === "urgent" ? "urgent" : "word", this.preferences);
+    void this.playAlert(request.urgency === "urgent" ? "urgent" : "word");
   }
+
+  notifyMessage(message) {
+    if (message.kind !== "request") return;
+    void this.playAlert("personal");
+  }
+
+  async playAlert(type) {
+    if (await playSound(type, this.preferences) === "blocked") {
+      this.soundHint = t("SoundBlocked");
+      this.render();
+    }
+  }
+
+  captureReply() {
+    const input = this.element.querySelector(".rts-request-reply-input");
+    if (input && this.replyOpen) this.replyDrafts.set(this.replyOpen, {...(this.replyDrafts.get(this.replyOpen) ?? {}), text: input.value});
+  }
+
+  async sendReply(request) {
+    this.captureReply();
+    const pending = this.replyDrafts.get(request.id) ?? {};
+    const text = pending.text?.trim() ?? "";
+    if (!text) return;
+    const id = pending.id ?? foundry.utils.randomID();
+    this.replyDrafts.set(request.id, {id, text});
+    this.busy = true; this.render();
+    try {
+      await this.personal.send({id, kind: "request", rootId: request.id, targetUserId: request.ownerUserId, text});
+      this.replyDrafts.delete(request.id); this.replyOpen = null; this.message = "";
+    } catch (error) { this.message = errorText(error); }
+    finally { this.busy = false; this.render(); }
+  }
+
+  async markMessageRead(id) {
+    try { await this.personal.markRead(id); }
+    catch (error) { this.message = errorText(error); }
+    this.render();
+  }
+
 
   async command(type, request) {
     if (this.busy) return;
@@ -87,10 +130,32 @@ export class GMPanel {
     flags.append(seen); head.append(flags); card.append(head);
     const actions = node("div", "rts-gm-actions");
     const floor = button(request.status === "floor" ? t("FloorGiven") : t("GrantFloor"), `rts-card-button ${request.status === "floor" ? "rts-floor-active" : ""}`, () => this.command("GRANT_FLOOR", request));
-    floor.disabled = this.busy || request.status === "floor";
+    floor.disabled = this.busy || ["floor", "closed", "cancelled"].includes(request.status);
     const close = button(t("Close"), "rts-card-button", () => this.command("CLOSE_REQUEST", request));
-    close.disabled = this.busy;
-    actions.append(floor, close); card.append(actions);
+    close.disabled = this.busy || ["closed", "cancelled"].includes(request.status);
+    const reply = button(t("Reply"), "rts-card-button", () => {
+      this.captureReply(); this.replyOpen = this.replyOpen === request.id ? null : request.id; this.render();
+    });
+    reply.disabled = this.busy;
+    actions.append(floor, close, reply); card.append(actions);
+    const thread = this.personal.thread("request", request.id);
+    if (thread.length) {
+      const history = node("div", "rts-reply-history");
+      for (const message of thread) {
+        const line = node("div", `rts-reply-line ${message.targetUserId === game.user.id && message.status === "unread" ? "rts-unread" : ""}`);
+        line.append(node("strong", "", userName(message.senderUserId, this.preferences)), node("span", "", displayContent(message.text)));
+        if (message.targetUserId === game.user.id && message.status === "unread") line.append(button(t("Acknowledge"), "rts-card-button", () => this.markMessageRead(message.id)));
+        history.append(line);
+      }
+      card.append(history);
+    }
+    if (this.replyOpen === request.id) {
+      const form = node("div", "rts-reply-form");
+      const input = node("textarea", "rts-request-reply-input");
+      input.maxLength = 240; input.rows = 2; input.placeholder = t("ReplyPlaceholder"); input.value = this.replyDrafts.get(request.id)?.text ?? "";
+      form.append(input, button(t("SendReply"), "rts-card-button", () => this.sendReply(request)));
+      card.append(form);
+    }
     return card;
   }
 
@@ -118,12 +183,14 @@ export class GMPanel {
     });
     clearLocal.prepend(icon("lock")); menu.append(clearLocal);
     if (this.message) menu.append(node("p", "rts-menu-message", this.message));
+    if (this.soundHint) menu.append(node("p", "rts-menu-message", this.soundHint));
     if (this.transport.replicationFailures) menu.append(node("p", "rts-menu-message", t("ReplicaWarning", {count: this.transport.replicationFailures})));
     menu.append(node("p", "rts-menu-note", t("BetaNotice")));
     return menu;
   }
 
   render() {
+    this.captureReply();
     const collapsed = this.preferences.gmCollapsed;
     const all = this.transport.gmQueue();
     const requests = this.filtered(all);
@@ -131,11 +198,18 @@ export class GMPanel {
     this.element.classList.toggle("rts-reduced", this.preferences.reduceMotion);
     this.element.replaceChildren();
     const header = node("div", "rts-header");
-    header.append(icon("users", "rts-header-symbol"), node("strong", "rts-heading", t("GMTitle")), node("span", "rts-count", String(all.length)), node("span", "rts-spacer"));
+    if (collapsed) {
+      const compact = button("", "rts-compact-button", () => { this.preferences.gmCollapsed = false; this.savePreferences(); this.render(); }, t("Expand"));
+      compact.append(icon("hand"));
+      const badge = all.filter(request => request.status === "pending").length + this.personal.unreadCount();
+      if (badge) compact.append(node("span", "rts-compact-count", badge > 99 ? "99+" : String(badge)));
+      if (all.some(request => request.urgency === "urgent" && request.status === "pending")) compact.classList.add("rts-compact-urgent");
+      header.append(compact);
+    } else header.append(icon("users", "rts-header-symbol"), node("strong", "rts-heading", t("GMTitle")), node("span", "rts-count", String(all.length)), node("span", "rts-spacer"));
     if (!collapsed) header.append(iconButton("more", "rts-icon-button rts-menu-toggle", () => { this.menuOpen = !this.menuOpen; this.render(); }, t("Menu")));
-    header.append(iconButton(collapsed ? "plus" : "minus", "rts-icon-button rts-collapse", () => {
+    if (!collapsed) header.append(iconButton("minus", "rts-icon-button rts-collapse", () => {
       this.preferences.gmCollapsed = !collapsed; this.savePreferences(); this.render();
-    }, collapsed ? t("Expand") : t("Collapse")));
+    }, t("Collapse")));
     this.element.append(header);
     makeDraggable(this.element, header, this.preferences, this.savePreferences, "gmX", "gmY");
     if (!collapsed) {
@@ -144,6 +218,12 @@ export class GMPanel {
       if (requests.length) {
         for (const request of requests) body.append(this.requestRow(request));
       } else body.append(node("div", "rts-empty", t("NoRequests")));
+      const closed = [...this.transport.requests.values()].filter(request => !all.some(active => active.id === request.id) && this.personal.thread("request", request.id).length);
+      if (closed.length) {
+        body.append(node("div", "rts-kind-label", t("ReplyHistory")));
+        for (const request of closed) body.append(this.requestRow(request));
+      }
+      if (this.soundHint) body.append(node("p", "rts-message", this.soundHint));
       this.element.append(body);
     }
     this.position();

@@ -1,5 +1,6 @@
 import {icon} from "./icons.js";
 import {displayUserName} from "./display.js";
+import {playSound} from "./sound.js";
 
 export function t(key, data = {}) { return game.i18n.format(`RTS.${key}`, data); }
 
@@ -90,11 +91,18 @@ export function preferenceControls(preferences, savePreferences, rerender) {
   group.append(volume);
   const types = node("div", "rts-sound-types");
   for (const type of ["word", "urgent", "personal", "floor"]) {
-    types.append(toggle(t(`SoundType.${type}`), preferences.soundTypes[type], value => {
+    types.append(toggle(t(game.user.isGM && type === "personal" ? "SoundTypeGMReply" : `SoundType.${type}`), preferences.soundTypes[type], value => {
       preferences.soundTypes[type] = value; savePreferences();
     }));
   }
   group.append(types);
+  const soundTest = button(t("TestSound"), "rts-menu-button", async () => {
+    soundResult.textContent = t("SoundTest.testing");
+    const result = await playSound("word", preferences);
+    soundResult.textContent = t(`SoundTest.${result}`);
+  });
+  const soundResult = node("p", "rts-menu-note");
+  group.append(soundTest, soundResult);
   group.append(toggle(t("ReduceMotion"), preferences.reduceMotion, value => {
     preferences.reduceMotion = value; savePreferences(); rerender();
   }));
@@ -125,14 +133,25 @@ export function makeDraggable(element, handle, preferences, savePreferences, xKe
     savePreferences();
   });
   handle.addEventListener("pointerdown", event => {
-    if (event.button !== 0 || event.target.closest("button,input,select")) return;
-    event.preventDefault();
-    handle.setPointerCapture(event.pointerId);
+    const compact = event.target.closest(".rts-compact-button");
+    if (event.button !== 0 || (event.target.closest("button,input,select") && !compact)) return;
+    if (!compact) {
+      event.preventDefault();
+      handle.setPointerCapture(event.pointerId);
+    }
+    const listenerTarget = compact ? window : handle;
     const startX = event.clientX;
     const startY = event.clientY;
     const originX = element.offsetLeft;
     const originY = element.offsetTop;
+    let moved = false;
+    if (compact) compact.addEventListener("click", click => {
+      if (!compact.dataset.rtsDragged) return;
+      click.stopImmediatePropagation();
+      delete compact.dataset.rtsDragged;
+    }, {capture: true, once: true});
     const move = current => {
+      if (Math.hypot(current.clientX - startX, current.clientY - startY) > 4) moved = true;
       const maxX = Math.max(10, window.innerWidth - element.offsetWidth - 10);
       const maxY = Math.max(10, window.innerHeight - element.offsetHeight - 10);
       element.style.left = `${Math.max(10, Math.min(maxX, originX + current.clientX - startX))}px`;
@@ -140,15 +159,16 @@ export function makeDraggable(element, handle, preferences, savePreferences, xKe
     };
     const up = current => {
       move(current);
+      if (compact && moved) compact.dataset.rtsDragged = "true";
       preferences[xKey] = element.offsetLeft;
       preferences[yKey] = element.offsetTop;
       savePreferences();
-      handle.removeEventListener("pointermove", move);
-      handle.removeEventListener("pointerup", up);
-      handle.removeEventListener("pointercancel", up);
+      listenerTarget.removeEventListener("pointermove", move);
+      listenerTarget.removeEventListener("pointerup", up);
+      listenerTarget.removeEventListener("pointercancel", up);
     };
-    handle.addEventListener("pointermove", move);
-    handle.addEventListener("pointerup", up);
-    handle.addEventListener("pointercancel", up);
+    listenerTarget.addEventListener("pointermove", move);
+    listenerTarget.addEventListener("pointerup", up);
+    listenerTarget.addEventListener("pointercancel", up);
   });
 }

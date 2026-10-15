@@ -21,6 +21,8 @@ export class PlayerPanel {
     this.settingsOpen = false;
     this.formDraft = null;
     this.personalDraft = {targetUserId: "", text: ""};
+    this.replyOpen = null;
+    this.replyDrafts = new Map();
     this.pendingDraft = null;
     this.toastId = null;
     this.busy = false;
@@ -54,7 +56,7 @@ export class PlayerPanel {
     this.toast.classList.toggle("rts-visible", !!message && message.status === "unread");
     if (!message || message.status !== "unread") return;
     const header = node("div", "rts-notice-head");
-    header.append(icon("mail"), node("strong", "", t("PersonalTitle")), node("span", "rts-spacer"));
+    header.append(icon("mail"), node("strong", "", t(message.kind === "request" ? "GMReplyTitle" : "PersonalTitle")), node("span", "rts-spacer"));
     header.append(iconButton("minus", "rts-icon-button", () => { this.toastId = null; this.renderToast(); }, t("Collapse")));
     this.toast.append(header);
     const body = node("div", "rts-notice-body");
@@ -64,6 +66,12 @@ export class PlayerPanel {
     const actions = node("div", "rts-notice-actions");
     actions.append(button(t("Later"), "rts-card-button", () => { this.toastId = null; this.renderToast(); }));
     actions.append(button(t("Acknowledge"), "rts-card-button rts-personal-seen", () => this.markPersonalRead(message.id)));
+    actions.append(button(t("Reply"), "rts-card-button", () => {
+      this.replyOpen = `${message.kind}:${message.rootId}`;
+      if (message.kind === "personal") { this.personalOpen = true; this.historyOpen = true; }
+      else this.personalOpen = false;
+      this.toastId = null; this.render();
+    }));
     body.append(actions, node("div", "rts-notice-meta", t("PersonalRemains")));
     this.toast.append(body);
   }
@@ -76,6 +84,11 @@ export class PlayerPanel {
   }
 
   captureDraft() {
+    const reply = this.element.querySelector(".rts-reply-input");
+    if (reply && this.replyOpen) {
+      const previous = this.replyDrafts.get(this.replyOpen) ?? {};
+      this.replyDrafts.set(this.replyOpen, {...previous, text: reply.value});
+    }
     const editor = this.element.querySelector(".rts-editor");
     if (editor) {
       const target = editor.querySelector(".rts-target");
@@ -258,6 +271,54 @@ export class PlayerPanel {
     catch (error) { this.personalMessage = errorText(error); this.render(); }
   }
 
+  async sendReply(kind, rootId, targetUserId) {
+    this.captureDraft();
+    const key = `${kind}:${rootId}`;
+    const current = this.replyDrafts.get(key) ?? {};
+    const text = current.text?.trim() ?? "";
+    if (!text || this.personalBusy) return;
+    const draft = {id: current.id ?? foundry.utils.randomID(), kind, rootId, targetUserId, text};
+    this.replyDrafts.set(key, draft);
+    this.personalBusy = true; this.personalMessage = t("Transport.sending"); this.render();
+    try {
+      await this.personal.send(draft);
+      this.replyDrafts.delete(key); this.replyOpen = null; this.personalMessage = "";
+    } catch (error) { this.personalMessage = errorText(error); }
+    finally { this.personalBusy = false; this.render(false); }
+  }
+
+  renderReplyForm(parent, kind, rootId, targetUserId) {
+    const key = `${kind}:${rootId}`;
+    if (this.replyOpen !== key) return;
+    const form = node("div", "rts-reply-form");
+    const input = node("textarea", "rts-reply-input");
+    input.maxLength = 240; input.rows = 2; input.placeholder = t("ReplyPlaceholder");
+    input.value = this.replyDrafts.get(key)?.text ?? "";
+    const send = button(t("SendReply"), "rts-card-button", () => this.sendReply(kind, rootId, targetUserId));
+    send.disabled = this.personalBusy;
+    form.append(input, send); parent.append(form);
+  }
+
+  renderRequestThread(body, requestId) {
+    const thread = this.personal.thread("request", requestId);
+    if (!thread.length) return;
+    const section = node("section", "rts-request-thread");
+    section.append(node("div", "rts-kind-label", t("ReplyHistory")));
+    for (const message of thread) {
+      const incoming = message.targetUserId === game.user.id;
+      const line = node("div", `rts-reply-line ${incoming && message.status === "unread" ? "rts-unread" : ""}`);
+      line.append(node("strong", "", userName(message.senderUserId, this.preferences)), node("span", "", displayContent(message.text)));
+      if (incoming && message.status === "unread") line.append(button(t("Acknowledge"), "rts-card-button", () => this.markPersonalRead(message.id)));
+      section.append(line);
+    }
+    const gmId = [...thread].reverse().find(message => message.senderUserId !== game.user.id)?.senderUserId;
+    if (gmId) {
+      section.append(button(t("Reply"), "rts-card-button", () => { this.captureDraft(); this.replyOpen = `request:${requestId}`; this.render(false); }));
+      this.renderReplyForm(section, "request", requestId, gmId);
+    }
+    body.append(section);
+  }
+
   renderPersonal(body) {
     const box = node("section", "rts-personal-section");
     box.append(node("div", "rts-rule"), node("div", "rts-kind-label", t("PersonalTitle")));
@@ -291,9 +352,12 @@ export class PlayerPanel {
     }));
     if (this.historyOpen) {
       const list = node("div", "rts-personal-history");
-      const messages = this.personal.history();
-      if (!messages.length) list.append(node("p", "rts-empty", t("NoPersonalHistory")));
-      for (const message of messages) {
+      const roots = [...new Set(this.personal.history().filter(message => message.kind === "personal").map(message => message.rootId))];
+      if (!roots.length) list.append(node("p", "rts-empty", t("NoPersonalHistory")));
+      for (const rootId of roots) {
+       const thread = this.personal.thread("personal", rootId);
+       const group = node("div", "rts-personal-thread");
+       for (const message of thread) {
         const incoming = message.targetUserId === game.user.id;
         const row = node("article", `rts-personal-item ${incoming && message.status === "unread" ? "rts-unread" : ""}`);
         row.append(node("strong", "", `${incoming ? "←" : "→"} ${userName(incoming ? message.senderUserId : message.targetUserId, this.preferences)}`));
@@ -308,7 +372,12 @@ export class PlayerPanel {
           this.personalDraft = {id: message.id, targetUserId: message.targetUserId, text: message.text};
           await this.sendPersonal();
         }));
-        list.append(row);
+        group.append(row);
+       }
+       const otherId = thread[0].senderUserId === game.user.id ? thread[0].targetUserId : thread[0].senderUserId;
+       group.append(button(t("Reply"), "rts-card-button", () => { this.captureDraft(); this.replyOpen = `personal:${rootId}`; this.render(false); }));
+       this.renderReplyForm(group, "personal", rootId, otherId);
+       list.append(group);
       }
       box.append(list);
     }
@@ -328,7 +397,13 @@ export class PlayerPanel {
     this.element.classList.toggle("rts-reduced", this.preferences.reduceMotion);
     this.element.replaceChildren();
     const header = node("div", "rts-header");
-    header.append(icon("grip", "rts-grip"), node("strong", "rts-heading", t("PlayerTitle")), node("span", "rts-spacer"));
+    if (collapsed) {
+      const compact = button("", "rts-compact-button", () => { this.preferences.collapsed = false; this.savePreferences(); this.render(); }, t("Expand"));
+      compact.append(icon("hand"));
+      const badge = this.personal.unreadCount();
+      if (badge) compact.append(node("span", "rts-compact-count", badge > 99 ? "99+" : String(badge)));
+      header.append(compact);
+    } else header.append(icon("grip", "rts-grip"), node("strong", "rts-heading", t("PlayerTitle")), node("span", "rts-spacer"));
     if (!collapsed) {
       const mail = iconButton("mail", "rts-icon-button rts-personal-toggle", () => {
         this.captureDraft(); this.personalOpen = !this.personalOpen; this.composeWord = false; this.historyOpen = false; this.render(false);
@@ -337,9 +412,9 @@ export class PlayerPanel {
       header.append(mail);
       header.append(iconButton("more", "rts-icon-button rts-menu-toggle", () => { this.settingsOpen = !this.settingsOpen; this.render(); }, t("Menu")));
     }
-    header.append(iconButton(collapsed ? "plus" : "minus", "rts-icon-button rts-collapse", () => {
+    if (!collapsed) header.append(iconButton("minus", "rts-icon-button rts-collapse", () => {
       this.preferences.collapsed = !collapsed; this.savePreferences(); this.render();
-    }, collapsed ? t("Expand") : t("Collapse")));
+    }, t("Collapse")));
     this.element.append(header);
     makeDraggable(this.element, header, this.preferences, this.savePreferences, "x", "y");
     if (!collapsed) {
@@ -393,12 +468,14 @@ export class PlayerPanel {
             if (await confirmAction("ConfirmCancel")) await this.run({type: "CANCEL_REQUEST", id: current.id, expectedRevision: current.revision});
           }));
           status.append(controls); body.append(status);
+          this.renderRequestThread(body, current.id);
         } else {
           const latest = this.transport.latestOwn();
           if (latest && ["closed", "cancelled"].includes(latest.status)
             && Date.now() < this.terminalNoticeUntil) {
             body.append(node("div", "rts-own-status rts-terminal-status", statusWithIcon(latest.status)));
           }
+          if (latest) this.renderRequestThread(body, latest.id);
         }
       }
       if (this.pendingDraft && !current) {

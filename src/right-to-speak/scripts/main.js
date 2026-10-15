@@ -20,8 +20,12 @@ Hooks.once("init", () => {
   });
   personal = new PersonalTransport(event => {
     playerPanel?.render();
-    if (event?.personalIncoming) playerPanel?.notifyPersonal(event.personalIncoming);
-  });
+    gmPanel?.render();
+    if (event?.personalIncoming) {
+      playerPanel?.notifyPersonal(event.personalIncoming);
+      gmPanel?.notifyMessage(event.personalIncoming);
+    }
+  }, undefined, transport);
   RTSTransport.registerQueries(transport);
   PersonalTransport.registerQueries(personal);
 });
@@ -30,8 +34,8 @@ Hooks.once("ready", async () => {
   const preferences = loadPreferences(game.world.id, game.user.id);
   const save = () => savePreferences(game.world.id, game.user.id, preferences);
   await transport.start();
-  if (!isGM(game.user)) await personal.start();
-  if (isGM(game.user)) gmPanel = new GMPanel(transport, preferences, save);
+  await personal.start();
+  if (isGM(game.user)) gmPanel = new GMPanel(transport, personal, preferences, save);
   else playerPanel = new PlayerPanel(transport, personal, preferences, save);
   Hooks.on("updateSetting", setting => {
     if (setting.key === `${MODULE_ID}.publicQueue`) {

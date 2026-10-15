@@ -5,8 +5,9 @@ export async function playSound(type, preferences) {
   if (!game.settings.get("right-to-speak", "allowSound")) return "disabled";
   try {
     const audio = new Audio(`modules/right-to-speak/sounds/${type}.wav`);
-    audio.volume = Math.max(0, Math.min(1, Number(preferences.volume) || 0));
+    const requested = Math.max(0, Math.min(1, Number(preferences.volume) || 0));
+    audio.volume = Math.min(type === "urgent" ? 0.75 : 0.65, requested);
     await audio.play();
-    return "played";
-  } catch { return "blocked"; }
+    return "started";
+  } catch (error) { return error?.name === "NotAllowedError" ? "blocked" : "failed"; }
 }
