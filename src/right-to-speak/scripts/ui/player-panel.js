@@ -3,6 +3,8 @@ import {icon} from "./icons.js";
 import {playSound} from "./sound.js";
 import {validatePersonalDraft} from "../core/personal.js";
 import {displayContent, displayUserName} from "./display.js";
+import {ACTIVE} from "../core/request-model.js";
+import {PublicWindow} from "./public-window.js";
 
 const TYPES = ["action", "support", "counteraction", "clarification"];
 function pendingKey() { return `rts-pending:${game.world.id}:${game.user.id}`; }
@@ -15,9 +17,11 @@ export class PlayerPanel {
     this.savePreferences = savePreferences;
     this.composeUrgent = !transport.activeOwn();
     this.composeWord = false;
+    this.wordNote = "";
     this.editorOpen = false;
     this.personalOpen = false;
     this.historyOpen = false;
+    this.ownHistoryOpen = false;
     this.settingsOpen = false;
     this.formDraft = null;
     this.personalDraft = {targetUserId: "", text: ""};
@@ -29,7 +33,7 @@ export class PlayerPanel {
     this.personalBusy = false;
     this.message = "";
     this.personalMessage = "";
-    this.lastOwnStatus = transport.activeOwn()?.status ?? null;
+    this.lastOwnStatus = transport.latestOwn()?.status ?? null;
     this.terminalNoticeUntil = 0;
     try { this.pendingDraft = JSON.parse(localStorage.getItem(pendingKey()) || "null"); } catch { /* Storage unavailable. */ }
     this.element = node("section", "rts-panel rts-player");
@@ -37,6 +41,7 @@ export class PlayerPanel {
     this.toast = node("aside", "rts-personal-toast");
     this.toast.setAttribute("role", "status");
     document.body.append(this.element, this.toast);
+    this.publicWindow = new PublicWindow(transport, preferences, savePreferences);
     this.render();
     window.addEventListener("resize", () => this.position());
   }
@@ -69,7 +74,7 @@ export class PlayerPanel {
     actions.append(button(t("Reply"), "rts-card-button", () => {
       this.replyOpen = `${message.kind}:${message.rootId}`;
       if (message.kind === "personal") { this.personalOpen = true; this.historyOpen = true; }
-      else this.personalOpen = false;
+      else { this.personalOpen = false; this.ownHistoryOpen = true; }
       this.toastId = null; this.render();
     }));
     body.append(actions, node("div", "rts-notice-meta", t("PersonalRemains")));
@@ -84,6 +89,8 @@ export class PlayerPanel {
   }
 
   captureDraft() {
+    const wordNote = this.element.querySelector(".rts-word-note");
+    if (wordNote) this.wordNote = wordNote.value;
     const reply = this.element.querySelector(".rts-reply-input");
     if (reply && this.replyOpen) {
       const previous = this.replyDrafts.get(this.replyOpen) ?? {};
@@ -114,7 +121,7 @@ export class PlayerPanel {
     try {
       await this.transport.submit(command);
       this.message = "";
-      if (command.type === "CREATE_REQUEST") { this.pendingDraft = null; this.rememberPending(); }
+      if (command.type === "CREATE_REQUEST") { this.pendingDraft = null; this.rememberPending(); this.wordNote = ""; }
       this.composeUrgent = false; this.composeWord = false; this.editorOpen = false; this.formDraft = null;
     } catch (error) {
       this.message = errorText(error);
@@ -123,12 +130,13 @@ export class PlayerPanel {
   }
 
   async createWord() {
+    this.captureDraft();
     const current = this.transport.activeOwn();
     if (current) { this.composeUrgent = false; this.editorOpen = true; this.formDraft = null; this.render(false); return; }
     if (this.pendingDraft) { this.message = t("Error.pendingVisibility"); this.render(); return; }
     if (!this.transport.lastCoordinatorId) { this.message = t("Error.gmOffline"); this.render(); return; }
     this.composeUrgent = false;
-    this.pendingDraft = {id: foundry.utils.randomID(), urgency: "normal", category: "word", targetUserId: null, note: "", visibility: this.preferences.private ? "gm" : "public"};
+    this.pendingDraft = {id: foundry.utils.randomID(), urgency: "normal", category: "word", targetUserId: null, note: this.wordNote, visibility: this.preferences.private ? "gm" : "public"};
     this.rememberPending();
     await this.run({type: "CREATE_REQUEST", draft: this.pendingDraft});
   }
@@ -238,6 +246,9 @@ export class PlayerPanel {
     privacy.setAttribute("aria-pressed", String(current ? current.visibility === "gm" : this.preferences.private));
     privacy.disabled = this.busy || (!!this.pendingDraft && !current);
     comment.append(note, privacy); editor.append(comment);
+    if ((current?.visibility ?? (this.preferences.private ? "gm" : "public")) === "public") {
+      editor.append(node("p", "rts-comment-public-hint", t("PublicCommentHint")));
+    }
     const actions = node("div", "rts-editor-actions");
     const save = button(urgentCompose && !current ? t("SendUrgent") : t("Save"), `rts-button ${urgentCompose ? "rts-send-urgent" : ""}`, () => urgentCompose ? this.submitUrgent() : this.saveEditor());
     save.disabled = this.busy || (urgentCompose && !this.transport.lastCoordinatorId);
@@ -384,14 +395,38 @@ export class PlayerPanel {
     body.append(box);
   }
 
+  renderOwnHistory(body) {
+    const completed = [...this.transport.own.values()].filter(request => !ACTIVE.has(request.status))
+      .sort((a, b) => b.order - a.order);
+    if (!completed.length) return;
+    const toggle = button(`${t("MyRequestHistory")} (${completed.length})`, "rts-link-button", () => {
+      this.ownHistoryOpen = !this.ownHistoryOpen; this.render();
+    });
+    toggle.setAttribute("aria-expanded", String(this.ownHistoryOpen));
+    body.append(toggle);
+    if (!this.ownHistoryOpen) return;
+    const list = node("section", "rts-own-history");
+    for (const request of completed) {
+      const item = node("article", "rts-own-history-item");
+      item.append(node("strong", "", categoryName(request.category)),
+        node("span", `rts-status-pill rts-status-${request.status}`, statusWithIcon(request.status)));
+      if (request.note) item.append(node("p", "rts-own-note", displayContent(request.note)));
+      if (request.answer) item.append(node("p", "rts-own-answer", `${t("PublicGMAnswer")}: ${displayContent(request.answer)}`));
+      this.renderRequestThread(item, request.id);
+      list.append(item);
+    }
+    body.append(list);
+  }
+
   render(capture = true) {
     if (capture) this.captureDraft();
     const current = this.transport.activeOwn();
-    if (current?.status === "floor" && this.lastOwnStatus !== "floor") void playSound("floor", this.preferences);
-    if (!current && this.lastOwnStatus && !["closed", "cancelled"].includes(this.lastOwnStatus)) {
+    const latest = this.transport.latestOwn();
+    if (latest?.status === "floor" && this.lastOwnStatus !== "floor") void playSound("floor", this.preferences);
+    if (latest && !ACTIVE.has(latest.status) && this.lastOwnStatus !== latest.status) {
       this.terminalNoticeUntil = Date.now() + 15000;
     }
-    this.lastOwnStatus = current?.status ?? null;
+    this.lastOwnStatus = latest?.status ?? null;
     const collapsed = this.preferences.collapsed;
     this.element.classList.toggle("rts-collapsed", collapsed);
     this.element.classList.toggle("rts-reduced", this.preferences.reduceMotion);
@@ -405,6 +440,10 @@ export class PlayerPanel {
       header.append(compact);
     } else header.append(icon("grip", "rts-grip"), node("strong", "rts-heading", t("PlayerTitle")), node("span", "rts-spacer"));
     if (!collapsed) {
+      const publicToggle = iconButton("users", "rts-icon-button rts-public-toggle", () => this.publicWindow.toggle(), t("PublicRequestsTitle"));
+      const publicCount = this.transport.visiblePublic().filter(request => ACTIVE.has(request.status)).length;
+      if (publicCount) publicToggle.append(node("span", "rts-unread-count", String(publicCount)));
+      header.append(publicToggle);
       const mail = iconButton("mail", "rts-icon-button rts-personal-toggle", () => {
         this.captureDraft(); this.personalOpen = !this.personalOpen; this.composeWord = false; this.historyOpen = false; this.render(false);
       }, t("PersonalTitle"));
@@ -421,12 +460,6 @@ export class PlayerPanel {
       if (this.settingsOpen) {
         const menu = node("div", "rts-drop-menu rts-player-menu");
         menu.append(node("div", "rts-menu-title", t("MenuTitle")), preferenceControls(this.preferences, this.savePreferences, () => this.render()));
-        const visible = this.transport.visiblePublic();
-        if (visible.length) {
-          const list = node("div", "rts-public-list"); list.append(node("h4", "", t("PublicQueue")));
-          for (const request of visible) list.append(node("div", "rts-public-row", `${t("QueuePosition", {order: request.order})} · ${userName(request.ownerUserId, this.preferences)} · ${categoryName(request.category)} · ${statusWithIcon(request.status)}`));
-          menu.append(list);
-        }
         this.element.append(menu);
       }
       const body = node("div", "rts-body");
@@ -448,6 +481,12 @@ export class PlayerPanel {
           privacy.setAttribute("aria-pressed", String(this.preferences.private));
           privacy.disabled = this.busy || !!this.pendingDraft;
           form.append(privacy);
+          const note = node("textarea", "rts-word-note");
+          note.rows = 2; note.maxLength = 240; note.placeholder = t("WordNotePlaceholder");
+          note.setAttribute("aria-label", t("NoteLabel")); note.value = this.wordNote;
+          note.addEventListener("input", () => { this.wordNote = note.value; });
+          form.append(note);
+          if (!this.preferences.private) form.append(node("p", "rts-comment-public-hint", t("PublicCommentHint")));
           const send = button(t("SendWord"), "rts-button rts-send-urgent", () => this.createWord());
           send.disabled = this.busy || noGM;
           form.append(send); body.append(form);
@@ -470,13 +509,13 @@ export class PlayerPanel {
           status.append(controls); body.append(status);
           this.renderRequestThread(body, current.id);
         } else {
-          const latest = this.transport.latestOwn();
-          if (latest && ["closed", "cancelled"].includes(latest.status)
+          if (latest && !ACTIVE.has(latest.status)
             && Date.now() < this.terminalNoticeUntil) {
             body.append(node("div", "rts-own-status rts-terminal-status", statusWithIcon(latest.status)));
           }
-          if (latest) this.renderRequestThread(body, latest.id);
+          if (latest && !this.ownHistoryOpen) this.renderRequestThread(body, latest.id);
         }
+        this.renderOwnHistory(body);
       }
       if (this.pendingDraft && !current) {
         const retry = node("div", "rts-status-actions");
@@ -491,5 +530,6 @@ export class PlayerPanel {
     }
     this.position();
     this.renderToast();
+    this.publicWindow.render();
   }
 }

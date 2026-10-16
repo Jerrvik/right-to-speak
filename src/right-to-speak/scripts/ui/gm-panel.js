@@ -2,6 +2,7 @@ import {applyPanelPosition, button, categoryName, confirmAction, errorText, icon
 import {icon} from "./icons.js";
 import {playSound} from "./sound.js";
 import {displayContent} from "./display.js";
+import {ACTIVE} from "../core/request-model.js";
 
 export class GMPanel {
   constructor(transport, personal, preferences, savePreferences) {
@@ -12,6 +13,7 @@ export class GMPanel {
     this.filter = "all";
     this.newIds = new Set();
     this.menuOpen = false;
+    this.historyOpen = false;
     this.message = "";
     this.busy = false;
     this.replyOpen = null;
@@ -53,19 +55,27 @@ export class GMPanel {
 
   captureReply() {
     const input = this.element.querySelector(".rts-request-reply-input");
-    if (input && this.replyOpen) this.replyDrafts.set(this.replyOpen, {...(this.replyDrafts.get(this.replyOpen) ?? {}), text: input.value});
+    if (input && this.replyOpen) {
+      const checkbox = this.element.querySelector(".rts-reply-public input");
+      this.replyDrafts.set(this.replyOpen, {...(this.replyDrafts.get(this.replyOpen) ?? {}),
+        text: input.value, publicAnswer: checkbox?.checked === true});
+    }
   }
 
   async sendReply(request) {
+    if (this.busy || !ACTIVE.has(request.status)) return;
     this.captureReply();
     const pending = this.replyDrafts.get(request.id) ?? {};
     const text = pending.text?.trim() ?? "";
     if (!text) return;
     const id = pending.id ?? foundry.utils.randomID();
-    this.replyDrafts.set(request.id, {id, text});
+    const publicAnswer = request.visibility === "public" && pending.publicAnswer !== false;
+    this.replyDrafts.set(request.id, {id, text, publicAnswer});
     this.busy = true; this.render();
     try {
       await this.personal.send({id, kind: "request", rootId: request.id, targetUserId: request.ownerUserId, text});
+      const latest = this.transport.requests.get(request.id);
+      await this.transport.submit({type: "ANSWER_REQUEST", id: request.id, expectedRevision: latest?.revision, text, publicAnswer});
       this.replyDrafts.delete(request.id); this.replyOpen = null; this.message = "";
     } catch (error) { this.message = errorText(error); }
     finally { this.busy = false; this.render(); }
@@ -108,6 +118,7 @@ export class GMPanel {
 
   requestRow(request) {
     const urgent = request.urgency === "urgent";
+    const thread = this.personal.thread("request", request.id);
     const card = node("article", `rts-request ${urgent ? "rts-request-urgent" : ""} ${this.newIds.has(request.id) ? "rts-request-new" : ""}`);
     const head = node("div", "rts-card-head");
     const kind = node("span", `rts-kind-icon rts-kind-${request.category}`);
@@ -117,10 +128,13 @@ export class GMPanel {
     const name = node("strong", "rts-username", userName(request.ownerUserId, this.preferences));
     name.title = name.textContent;
     text.append(name);
-    text.append(node("div", `rts-category-name rts-category-${request.category}`, request.status === "floor" ? statusName("floor") : categoryName(request.category)));
+    text.append(node("div", `rts-category-name rts-category-${request.category}`, ACTIVE.has(request.status) ? categoryName(request.category) : `${categoryName(request.category)} · ${statusName(request.status)}`));
     if (request.targetUserId) text.append(node("div", "rts-target-line", `${t("TargetShort")}: ${userName(request.targetUserId, this.preferences)}`));
     const note = displayContent(request.note);
     if (note) text.append(node("p", "rts-full-note", note));
+    if (request.answer && !thread.some(message => message.text === request.answer && message.senderUserId !== request.ownerUserId)) {
+      text.append(node("p", "rts-full-note", `${t("PublicGMAnswer")}: ${displayContent(request.answer)}`));
+    }
     head.append(text);
     const flags = node("div", "rts-card-flags");
     if (urgent) flags.append(icon("alert", "rts-flag-urgent"));
@@ -128,17 +142,18 @@ export class GMPanel {
     const seen = iconButton(request.status === "pending" ? "eye" : "check", `rts-seen-icon ${request.status === "pending" ? "" : "rts-ack"}`, () => this.command("ACKNOWLEDGE_REQUEST", request), t("Acknowledge"));
     seen.disabled = this.busy || request.status !== "pending";
     flags.append(seen); head.append(flags); card.append(head);
-    const actions = node("div", "rts-gm-actions");
-    const floor = button(request.status === "floor" ? t("FloorGiven") : t("GrantFloor"), `rts-card-button ${request.status === "floor" ? "rts-floor-active" : ""}`, () => this.command("GRANT_FLOOR", request));
-    floor.disabled = this.busy || ["floor", "closed", "cancelled"].includes(request.status);
-    const close = button(t("Close"), "rts-card-button", () => this.command("CLOSE_REQUEST", request));
-    close.disabled = this.busy || ["closed", "cancelled"].includes(request.status);
-    const reply = button(t("Reply"), "rts-card-button", () => {
-      this.captureReply(); this.replyOpen = this.replyOpen === request.id ? null : request.id; this.render();
-    });
-    reply.disabled = this.busy;
-    actions.append(floor, close, reply); card.append(actions);
-    const thread = this.personal.thread("request", request.id);
+    if (ACTIVE.has(request.status)) {
+      const actions = node("div", "rts-gm-actions");
+      const floor = button(t("GrantFloor"), "rts-card-button", () => this.command("GRANT_FLOOR", request));
+      floor.disabled = this.busy;
+      const close = button(t("Close"), "rts-card-button", () => this.command("CLOSE_REQUEST", request));
+      close.disabled = this.busy;
+      const reply = button(t("Reply"), "rts-card-button", () => {
+        this.captureReply(); this.replyOpen = this.replyOpen === request.id ? null : request.id; this.render();
+      });
+      reply.disabled = this.busy;
+      actions.append(floor, close, reply); card.append(actions);
+    }
     if (thread.length) {
       const history = node("div", "rts-reply-history");
       for (const message of thread) {
@@ -149,11 +164,18 @@ export class GMPanel {
       }
       card.append(history);
     }
-    if (this.replyOpen === request.id) {
+    if (ACTIVE.has(request.status) && this.replyOpen === request.id) {
       const form = node("div", "rts-reply-form");
       const input = node("textarea", "rts-request-reply-input");
       input.maxLength = 240; input.rows = 2; input.placeholder = t("ReplyPlaceholder"); input.value = this.replyDrafts.get(request.id)?.text ?? "";
       form.append(input, button(t("SendReply"), "rts-card-button", () => this.sendReply(request)));
+      if (request.visibility === "public") {
+        const visibility = node("label", "rts-reply-public");
+        const checkbox = node("input"); checkbox.type = "checkbox";
+        checkbox.checked = this.replyDrafts.get(request.id)?.publicAnswer !== false;
+        visibility.append(checkbox, node("span", "", t("PublicAnswerToggle")));
+        form.append(visibility);
+      }
       card.append(form);
     }
     return card;
@@ -218,10 +240,14 @@ export class GMPanel {
       if (requests.length) {
         for (const request of requests) body.append(this.requestRow(request));
       } else body.append(node("div", "rts-empty", t("NoRequests")));
-      const closed = [...this.transport.requests.values()].filter(request => !all.some(active => active.id === request.id) && this.personal.thread("request", request.id).length);
-      if (closed.length) {
-        body.append(node("div", "rts-kind-label", t("ReplyHistory")));
-        for (const request of closed) body.append(this.requestRow(request));
+      const completed = [...this.transport.requests.values()].filter(request => !ACTIVE.has(request.status))
+        .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+      if (completed.length) {
+        body.append(button(t("CompletedHistory"), "rts-link-button", () => { this.historyOpen = !this.historyOpen; this.render(); }));
+        if (this.historyOpen) {
+          body.append(node("div", "rts-kind-label", t("CompletedHistory")));
+          for (const request of completed) body.append(this.requestRow(request));
+        }
       }
       if (this.soundHint) body.append(node("p", "rts-message", this.soundHint));
       this.element.append(body);

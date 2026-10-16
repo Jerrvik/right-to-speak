@@ -2,7 +2,7 @@ import {ACTIVE, assert, CATEGORIES, RequestError, validateNote, validateTarget} 
 import {canAct} from "./privacy.js";
 
 export function createRequest(draft, {now, order}) {
-  return Object.freeze({...draft, status: "pending", createdAt: now, updatedAt: now, order, revision: 1});
+  return Object.freeze({...draft, notePublic: draft.visibility === "public", status: "pending", createdAt: now, updatedAt: now, order, revision: 1});
 }
 
 export function reduceRequest(current, command, context) {
@@ -18,6 +18,7 @@ export function reduceRequest(current, command, context) {
       next.category = category;
       next.targetUserId = validateTarget(command.targetUserId ?? null, current.ownerUserId, userIds);
       next.note = validateNote(command.note ?? "");
+      if (current.visibility === "public") next.notePublic = true;
       break;
     }
     case "ESCALATE":
@@ -36,6 +37,7 @@ export function reduceRequest(current, command, context) {
     case "SET_VISIBILITY":
       assert(["public", "gm"].includes(command.visibility) && command.visibility !== current.visibility, "invalidVisibility");
       next.visibility = command.visibility;
+      next.notePublic = command.visibility === "public";
       break;
     case "CANCEL_REQUEST":
       next.status = "cancelled";
@@ -49,6 +51,13 @@ export function reduceRequest(current, command, context) {
       next.status = "floor";
       break;
     case "CLOSE_REQUEST":
+      next.status = "closed";
+      break;
+    case "ANSWER_REQUEST":
+      next.answer = validateNote(command.text);
+      assert(next.answer.trim().length > 0, "invalidNote");
+      assert(command.publicAnswer === undefined || typeof command.publicAnswer === "boolean", "invalidOperation");
+      next.answerPublic = current.visibility === "public" && command.publicAnswer === true;
       next.status = "closed";
       break;
     default:

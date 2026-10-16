@@ -1,4 +1,4 @@
-import {ACTIVE, assert} from "./request-model.js";
+import {assert} from "./request-model.js";
 
 export function isGM(user) {
   return !!user && user.role === 4; // CONST.USER_ROLES.GAMEMASTER in Foundry V14.
@@ -17,14 +17,20 @@ export function publicProjection(request, publicOrder) {
     urgency: request.urgency,
     category: request.category,
     targetUserId: request.targetUserId,
+    note: request.notePublic === true ? request.note : "",
+    notePublic: request.notePublic === true,
+    answer: request.answerPublic === true ? request.answer ?? "" : "",
+    answerPublic: request.answerPublic === true,
     status: request.status,
     createdAt: request.createdAt,
+    updatedAt: request.updatedAt,
+    revision: request.revision,
     order: publicOrder
   };
 }
 
 export function publicQueue(requests) {
-  return requests.filter(r => r.visibility === "public" && ACTIVE.has(r.status))
+  return requests.filter(r => r.visibility === "public")
     .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id))
     .map((request, index) => publicProjection(request, index + 1));
 }
@@ -34,7 +40,7 @@ export function authorizedSnapshot(requests, user) {
 }
 
 export function canAct(actor, request, action) {
-  if (["ACKNOWLEDGE_REQUEST", "GRANT_FLOOR", "CLOSE_REQUEST", "CLEAR_QUEUE"].includes(action)) return isGM(actor);
+  if (["ACKNOWLEDGE_REQUEST", "GRANT_FLOOR", "CLOSE_REQUEST", "ANSWER_REQUEST", "CLEAR_QUEUE"].includes(action)) return isGM(actor);
   if (action === "CANCEL_REQUEST" || action === "UPDATE_REQUEST" || action === "ESCALATE" || action === "ESCALATE_WITH_DETAILS" || action === "SET_VISIBILITY") {
     return isGM(actor) || actor?.id === request?.ownerUserId;
   }

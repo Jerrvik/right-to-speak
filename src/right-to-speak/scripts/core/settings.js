@@ -34,9 +34,13 @@ export function loadPreferences(worldId, userId) {
       reduceMotion: !!raw.reduceMotion,
       gmX: Number.isFinite(raw.gmX) ? raw.gmX : null,
       gmY: Number.isFinite(raw.gmY) ? raw.gmY : null,
-      gmCollapsed: !!raw.gmCollapsed
+      gmCollapsed: !!raw.gmCollapsed,
+      publicX: Number.isFinite(raw.publicX) ? raw.publicX : null,
+      publicY: Number.isFinite(raw.publicY) ? raw.publicY : null,
+      publicOpen: !!raw.publicOpen,
+      publicCollapsed: !!raw.publicCollapsed
     };
-  } catch { return {x: null, y: null, collapsed: false, private: false, nameDisplay: "player", sound: true, volume: 0.45, soundTypes: {word: true, urgent: true, personal: true, floor: true}, reduceMotion: false, gmX: null, gmY: null, gmCollapsed: false}; }
+  } catch { return {x: null, y: null, collapsed: false, private: false, nameDisplay: "player", sound: true, volume: 0.45, soundTypes: {word: true, urgent: true, personal: true, floor: true}, reduceMotion: false, gmX: null, gmY: null, gmCollapsed: false, publicX: null, publicY: null, publicOpen: false, publicCollapsed: false}; }
 }
 
 export function savePreferences(worldId, userId, preferences) {

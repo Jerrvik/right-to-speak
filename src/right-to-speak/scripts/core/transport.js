@@ -1,4 +1,4 @@
-import {ACTIVE, assert, MODULE_ID, RequestError, sortQueue, validateDraft, validateStoredRequest} from "./request-model.js";
+import {ACTIVE, assert, MODULE_ID, RequestError, sortQueue, STATUS, validateDraft, validateStoredRequest} from "./request-model.js";
 import {authorizedSnapshot, isGM, publicQueue} from "./privacy.js";
 import {createRequest, reduceRequest} from "./reducer.js";
 import {loadLocal, saveLocal} from "./storage.js";
@@ -100,6 +100,10 @@ export class RTSTransport {
       if (isGM(game.user)) this.mergePublicFromSetting();
     }
     this.lastCoordinatorId = coordinator()?.id ?? null;
+    if (isGM(game.user) && this.userId === this.lastCoordinatorId && this.privateReady) {
+      try { await this.refreshPublicSetting(); }
+      catch { /* A later GM action can publish the migrated projection. */ }
+    }
     this.onChange();
     void this.synchronize();
   }
@@ -109,17 +113,24 @@ export class RTSTransport {
     const entries = currentPublicSetting().requests;
     const present = new Set();
     for (const entry of entries) {
-      if (!entry || entry.visibility || entry.note || !ACTIVE.has(entry.status)) continue;
-      present.add(entry.id);
+      if (!entry || entry.visibility || !STATUS.has(entry.status)) continue;
       const old = this.requests.get(entry.id);
       if (old?.visibility === "gm") continue;
-      this.requests.set(entry.id, {
-        ...entry,
-        note: old?.note ?? "",
-        visibility: "public",
-        revision: old?.revision ?? 1,
-        updatedAt: old?.updatedAt ?? entry.createdAt
-      });
+      const request = {
+        id: entry.id, ownerUserId: entry.ownerUserId, urgency: entry.urgency,
+        category: entry.category, targetUserId: entry.targetUserId ?? null,
+        note: entry.notePublic === true ? entry.note ?? "" : old?.note ?? "",
+        notePublic: entry.notePublic === true,
+        answer: entry.answerPublic === true ? entry.answer ?? "" : old?.answer ?? "",
+        answerPublic: entry.answerPublic === true,
+        visibility: "public", status: entry.status, createdAt: entry.createdAt,
+        updatedAt: entry.updatedAt ?? old?.updatedAt ?? entry.createdAt,
+        order: entry.order, revision: entry.revision ?? old?.revision ?? 1
+      };
+      try { validateStoredRequest(request, userIds()); }
+      catch { continue; }
+      present.add(entry.id);
+      this.requests.set(entry.id, request);
       this.usedIds.set(entry.id, {id: entry.id, ownerUserId: entry.ownerUserId, visibility: "public"});
     }
     for (const request of this.requests.values()) {
@@ -132,7 +143,14 @@ export class RTSTransport {
 
   visiblePublic() {
     if (!game.settings.get(MODULE_ID, "showPublicQueue") && !isGM(game.user)) return [];
-    return sortQueue(currentPublicSetting().requests);
+    return currentPublicSetting().requests.filter(request => request && !request.visibility && STATUS.has(request.status));
+  }
+
+  async refreshPublicSetting() {
+    const requests = publicQueue(trimHistory([...this.requests.values()]));
+    if (JSON.stringify(currentPublicSetting().requests) !== JSON.stringify(requests)) {
+      await game.settings.set(MODULE_ID, "publicQueue", sanitizedPublicSetting([...this.requests.values()]));
+    }
   }
 
   activeOwn() {
@@ -142,7 +160,7 @@ export class RTSTransport {
 
   latestOwn() {
     const entries = isGM(game.user) ? [...this.requests.values()].filter(r => r.ownerUserId === this.userId) : [...this.own.values()];
-    return entries.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0] ?? null;
+    return entries.sort((a, b) => b.order - a.order || Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0] ?? null;
   }
 
   gmQueue() { return sortQueue(this.requests.values()); }
@@ -211,7 +229,7 @@ export class RTSTransport {
       if (active) return {request: active, duplicate: true};
       const cooldown = Number(game.settings.get(MODULE_ID, "createCooldown")) * 1000;
       const last = before.filter(r => r.ownerUserId === actor.id).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
-      assert(!last || Date.parse(now) - Date.parse(last.createdAt) >= cooldown, "rateLimited");
+      assert(!last || ["floor", "closed"].includes(last.status) || Date.parse(now) - Date.parse(last.createdAt) >= cooldown, "rateLimited");
       const order = Math.max(usedNext.size, ...before.map(r => r.order), 0) + 1;
       const request = createRequest(draft, {now, order});
       next.push(request);

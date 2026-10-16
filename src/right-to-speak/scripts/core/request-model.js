@@ -1,9 +1,9 @@
 export const MODULE_ID = "right-to-speak";
-export const ACTIVE = new Set(["pending", "acknowledged", "floor"]);
+export const ACTIVE = new Set(["pending", "acknowledged"]);
 export const CATEGORIES = new Set(["word", "intervention", "action", "support", "counteraction", "clarification"]);
 export const URGENCIES = new Set(["normal", "urgent"]);
 export const VISIBILITIES = new Set(["public", "gm"]);
-export const STATUS = new Set([...ACTIVE, "closed", "cancelled"]);
+export const STATUS = new Set([...ACTIVE, "floor", "closed", "cancelled"]);
 
 export class RequestError extends Error {
   constructor(code) {
@@ -59,6 +59,9 @@ export function validateStoredRequest(request, worldUserIds) {
   assert(URGENCIES.has(request.urgency) && CATEGORIES.has(request.category), "invalidCategory");
   assert(VISIBILITIES.has(request.visibility) && STATUS.has(request.status), "invalidRequest");
   validateNote(request.note);
+  if (request.notePublic !== undefined) assert(typeof request.notePublic === "boolean", "invalidRequest");
+  if (request.answer !== undefined) validateNote(request.answer);
+  if (request.answerPublic !== undefined) assert(typeof request.answerPublic === "boolean", "invalidRequest");
   assert(request.targetUserId === null || typeof request.targetUserId === "string", "invalidTarget");
   assert(Number.isSafeInteger(request.order) && request.order > 0, "invalidOrder");
   assert(Number.isSafeInteger(request.revision) && request.revision > 0, "invalidRevision");
