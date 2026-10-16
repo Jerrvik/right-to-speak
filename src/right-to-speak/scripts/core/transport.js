@@ -2,6 +2,7 @@ import {ACTIVE, assert, MODULE_ID, RequestError, sortQueue, STATUS, validateDraf
 import {authorizedSnapshot, isGM, publicQueue} from "./privacy.js";
 import {createRequest, reduceRequest} from "./reducer.js";
 import {loadLocal, saveLocal} from "./storage.js";
+import {directedQueries} from "./directed-query.js";
 
 const PREFIX = `${MODULE_ID}.`;
 const QUERY = {
@@ -59,11 +60,11 @@ export class RTSTransport {
   }
 
   static registerQueries(instance) {
-    CONFIG.queries[QUERY.command] = (data, context) => instance.receiveCommand(data, context);
-    CONFIG.queries[QUERY.snapshot] = (data, context) => instance.receiveSnapshot(data, context);
-    CONFIG.queries[QUERY.deliver] = (data, context) => instance.receiveDelivery(data, context);
-    CONFIG.queries[QUERY.replica] = (data, context) => instance.receiveReplica(data, context);
-    CONFIG.queries[QUERY.health] = (_data, context) => instance.receiveHealth(context);
+    directedQueries.register(QUERY.command, (data, context) => instance.receiveCommand(data, context));
+    directedQueries.register(QUERY.snapshot, (data, context) => instance.receiveSnapshot(data, context));
+    directedQueries.register(QUERY.deliver, (data, context) => instance.receiveDelivery(data, context));
+    directedQueries.register(QUERY.replica, (data, context) => instance.receiveReplica(data, context));
+    directedQueries.register(QUERY.health, (_data, context) => instance.receiveHealth(context));
   }
 
   async start() {
@@ -169,7 +170,7 @@ export class RTSTransport {
     const gm = coordinator();
     if (!gm) return {online: false, privateReady: false};
     if (!game.user.hasPermission("QUERY_USER")) return {online: true, privateReady: false, error: "queryDenied"};
-    try { return await gm.query(QUERY.health, {}, {timeout: TIMEOUT}); }
+    try { return await directedQueries.query(gm, QUERY.health, {}, {timeout: TIMEOUT}); }
     catch { return {online: true, privateReady: false, error: "deliveryFailed"}; }
   }
 
@@ -190,7 +191,7 @@ export class RTSTransport {
     }
     const result = gm.id === game.user.id
       ? await this.receiveCommand(command, {user: game.user})
-      : await gm.query(QUERY.command, command, {timeout: TIMEOUT});
+      : await directedQueries.query(gm, QUERY.command, command, {timeout: TIMEOUT});
     if (result?.request?.ownerUserId === this.userId) await this.acceptOwn(result.request);
     this.onChange();
     return result;
@@ -282,12 +283,12 @@ export class RTSTransport {
     const owner = game.users.get(request.ownerUserId);
     if (!owner?.active) return;
     if (owner.id === game.user.id) return this.acceptOwn(request);
-    await owner.query(QUERY.deliver, {request}, {timeout: TIMEOUT});
+    await directedQueries.query(owner, QUERY.deliver, {request}, {timeout: TIMEOUT});
   }
 
   async replicateToGMs(request) {
     const others = game.users.filter(user => user.active && isGM(user) && user.id !== game.user.id);
-    const results = await Promise.allSettled(others.map(user => user.query(QUERY.replica, {request}, {timeout: TIMEOUT})));
+    const results = await Promise.allSettled(others.map(user => directedQueries.query(user, QUERY.replica, {request}, {timeout: TIMEOUT})));
     const failures = results.filter(result => result.status === "rejected").length;
     if (this.replicationFailures !== failures) {
       this.replicationFailures = failures;
@@ -351,7 +352,7 @@ export class RTSTransport {
     const gm = coordinator();
     if (!gm || gm.id === game.user.id) return;
     try {
-      const snapshot = await gm.query(QUERY.snapshot, {}, {timeout: TIMEOUT});
+      const snapshot = await directedQueries.query(gm, QUERY.snapshot, {}, {timeout: TIMEOUT});
       if (!Array.isArray(snapshot?.requests)) return;
       if (isGM(game.user)) {
         if (!this.privateReady) return;

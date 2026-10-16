@@ -5,6 +5,7 @@ import {MODULE_ID} from "./core/request-model.js";
 import {loadPreferences, registerSettings, savePreferences} from "./core/settings.js";
 import {GMPanel} from "./ui/gm-panel.js";
 import {PlayerPanel} from "./ui/player-panel.js";
+import {directedQueries} from "./core/directed-query.js";
 
 let playerPanel;
 let gmPanel;
@@ -13,6 +14,7 @@ let personal;
 
 Hooks.once("init", () => {
   registerSettings();
+  directedQueries.registerVerifier();
   transport = new RTSTransport(event => {
     playerPanel?.render();
     gmPanel?.render();

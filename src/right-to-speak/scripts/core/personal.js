@@ -1,6 +1,7 @@
 import {assert, MODULE_ID, RequestError, validateId} from "./request-model.js";
 import {isGM} from "./privacy.js";
 import {loadLocal, saveMessages} from "./storage.js";
+import {directedQueries} from "./directed-query.js";
 
 const QUERY = {
   send: `${MODULE_ID}.personal.send`,
@@ -54,9 +55,9 @@ export class PersonalTransport {
   }
 
   static registerQueries(instance) {
-    CONFIG.queries[QUERY.send] = (data, context) => instance.receive(data, context);
-    CONFIG.queries[QUERY.receipt] = (data, context) => instance.receiveReceipt(data, context);
-    CONFIG.queries[QUERY.status] = (data, context) => instance.receiveStatus(data, context);
+    directedQueries.register(QUERY.send, (data, context) => instance.receive(data, context));
+    directedQueries.register(QUERY.receipt, (data, context) => instance.receiveReceipt(data, context));
+    directedQueries.register(QUERY.status, (data, context) => instance.receiveStatus(data, context));
   }
 
   async start() {
@@ -147,7 +148,7 @@ export class PersonalTransport {
       message = {...parsed, createdAt: new Date(time).toISOString(), status: "sending"};
       await this.persist(message);
     }
-    const result = await target.query(QUERY.send, {id: message.id, rootId: message.rootId, kind: message.kind, targetUserId: message.targetUserId, text: message.text, createdAt: message.createdAt}, {timeout: TIMEOUT});
+    const result = await directedQueries.query(target, QUERY.send, {id: message.id, rootId: message.rootId, kind: message.kind, targetUserId: message.targetUserId, text: message.text, createdAt: message.createdAt}, {timeout: TIMEOUT});
     const updated = {...message, status: result?.status === "read" ? "read" : "sent"};
     await this.persist(updated);
     return updated;
@@ -176,7 +177,7 @@ export class PersonalTransport {
     if (message.status !== "read") await this.persist({...message, status: "read"});
     const sender = game.users.get(message.senderUserId);
     if (sender?.active) {
-      try { await sender.query(QUERY.receipt, {id}, {timeout: TIMEOUT}); }
+      try { await directedQueries.query(sender, QUERY.receipt, {id}, {timeout: TIMEOUT}); }
       catch { /* Sender can recover the receipt through a later directed status query. */ }
     }
   }
@@ -206,7 +207,7 @@ export class PersonalTransport {
       if (!target?.active) continue;
       const ids = pending.filter(message => message.targetUserId === id).map(message => message.id);
       try {
-        const result = await target.query(QUERY.status, {ids}, {timeout: TIMEOUT});
+        const result = await directedQueries.query(target, QUERY.status, {ids}, {timeout: TIMEOUT});
         for (const readId of result?.readIds ?? []) {
           const message = this.messages.get(readId);
           if (message?.senderUserId === this.userId && message.targetUserId === id && message.status !== "read") {
